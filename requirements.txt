@@ -1,4 +1,5 @@
-numpy
-pillow
 flask
-tensorflow
+flask-cors
+numpy
+opencv-python
+pillow

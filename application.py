@@ -1,139 +1,111 @@
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-import flask
-import argparse
+from flask import Flask, render_template, redirect, request, url_for, jsonify, session, json
+from flask_cors import CORS, cross_origin
 from PIL import Image
-import io
-import sys, os
-import time
+import cv2
+import numpy
+import os
+import csv
+#models
 
-import numpy as np
-import tensorflow as tf
-'''
-Model Code starts Here
+face_cascade = cv2.CascadeClassifier("haarcascade_frontalface_default.xml")
 
-'''
-model_file = "all_models/output_graph.pb"
-label_file = "all_models/output_labels.txt"
-input_height = 299
-input_width = 299
-input_mean = 128
-input_std = 128
-input_layer = "Mul"
-output_layer = "final_result"
-graph = None
-def load_graph(model_file):
-  graph = tf.Graph()
-  graph_def = tf.GraphDef()
+def getDatabaseLink(avg_color):
+    Links_list = []
+    data_total = []
+    files = [
+        '1 - Foundation Findr output _ links - FENTY BEAUTY.csv',
+        '2 - Foundation Findr output _ links - KAT VON D.csv',
+        '3 - Foundation Findr output _ links - Mini KAT VON D.csv',
+        '4 - Foundation Findr output _ links - Marc Jacobs Shameless.csv',
+        '5 - Foundation Findr output _ links - Marc Jacobs Re(marc)able Full Cover Foundation.csv',
+        '6 - Foundation Findr output _ links - MAKE UP FOREVER ULTRA HD FOUNDATION.csv',
+        '7 - Foundation Findr output _ links - MAKE UP FOREVER Water Blend Face & Body FOUNDATION.csv',
+        '8 - Foundation Findr output _ links - MAKE UP FOREVER Matte Velvet Skin Foundation.csv',
+        '9 - Foundation Findr output _ links - BENEFIT COSMETICS SOFT BLUR FOUNDATION.csv',
+        '10 - Foundation Findr output _ links - DIOR.csv'
+    ]
+    for file in files:
+        i = 0
+        rc = 0
+        data_single = []
+        with open("new_csv/" + file, "r") as fileReader:
+            print(file)
+            spamreader = csv.reader(fileReader, delimiter=',', quotechar='|')
+            
+            valueAdded = 0
+            for row in spamreader:
+                i += 1
+                if i > 1:
+                    if avg_color >= int(row[1]) and avg_color < int(row[2]):
+                        # No of column you want to see
+                        if valueAdded == 0:
+                            Links_list.append(rc)
+                            valueAdded = 1
+                    data_single.append([row[4], row[3], row[0]])
+                    rc += 1
+        data_total.append(data_single)
+    return Links_list, data_total
 
-  with open(model_file, "rb") as f:
-    graph_def.ParseFromString(f.read())
-  with graph.as_default():
-    tf.import_graph_def(graph_def)
+def findProducts(IMG_PATH):
+    result = {}
+    print("[info] Recognizing face in image")
+    image = cv2.imread(IMG_PATH)
+    faces = face_cascade.detectMultiScale(image, 1.3, 5)
+    if len(faces) < 1:
+        print("[info] No Face found. Please retry capturing image")
+        return False
+    for (x,y,w,h) in faces:
+        roi_color = image[y:y+h, x:x+w]
+    
+    print("[info] Getting best products for this face")
+    imgGray = cv2.cvtColor(roi_color, cv2.COLOR_BGR2GRAY)
+    h,w = imgGray.shape
+    avg_color_per_row = numpy.average(imgGray, axis=0)
+    avg_color = int(numpy.average(avg_color_per_row, axis=0))
 
-  return graph
+    all_urls_index, all_data_list = getDatabaseLink(avg_color)
+    result['index'] = all_urls_index
+    result['data'] = all_data_list
+    print("[info] Your suggestions are as follows:")
+    print(all_data_list)
+    return result
+#end of models
 
-def read_tensor_from_image_file(file_name, input_height=299, input_width=299,
-				input_mean=0, input_std=255):
-  input_name = "file_reader"
-  output_name = "normalized"
-  file_reader = tf.read_file(file_name, input_name)
-  if file_name.endswith(".png"):
-    image_reader = tf.image.decode_png(file_reader, channels = 3,
-                                       name='png_reader')
-  elif file_name.endswith(".gif"):
-    image_reader = tf.squeeze(tf.image.decode_gif(file_reader,
-                                                  name='gif_reader'))
-  elif file_name.endswith(".bmp"):
-    image_reader = tf.image.decode_bmp(file_reader, name='bmp_reader')
-  else:
-    image_reader = tf.image.decode_jpeg(file_reader, channels = 3,
-                                        name='jpeg_reader')
-  float_caster = tf.cast(image_reader, tf.float32)
-  dims_expander = tf.expand_dims(float_caster, 0);
-  resized = tf.image.resize_bilinear(dims_expander, [input_height, input_width])
-  normalized = tf.divide(tf.subtract(resized, [input_mean]), [input_std])
-  sess = tf.Session()
-  result = sess.run(normalized)
+#Flask App Structure
+app = Flask(__name__)
+app.config.from_object(__name__)
 
-  return result
-
-def load_labels(label_file):
-  label = []
-  proto_as_ascii_lines = tf.gfile.GFile(label_file).readlines()
-  for l in proto_as_ascii_lines:
-    label.append(l.rstrip())
-  return label
-
-
-
-
-def loadAndDetect(file_name):
-    graph = load_graph(model_file)
-    t = read_tensor_from_image_file(file_name,
-                                  input_height=input_height,
-                                  input_width=input_width,
-                                  input_mean=input_mean,
-                                  input_std=input_std)
-
-    input_name = "import/" + input_layer
-    output_name = "import/" + output_layer
-    input_operation = graph.get_operation_by_name(input_name);
-    output_operation = graph.get_operation_by_name(output_name);
-
-    with tf.Session(graph=graph) as sess:
-        start = time.time()
-        results = sess.run(output_operation.outputs[0],
-                      {input_operation.outputs[0]: t})
-    end=time.time()
-    results = np.squeeze(results)
-
-    top_k = results.argsort()[-5:][::-1]
-    labels = load_labels(label_file)
-    return results, top_k, labels
-    return results
+#Cors Setup
+cors = CORS(app)
+app.config['CORS_HEADERS'] = 'Content-Type'
 
 
-'''
-Model Code ends Here
-
-
-Flask API code starts here
-'''
-application = app = flask.Flask(__name__)
-
+#server route working
 @app.route('/')
 def hello_world():
-   return "Server Up and Running"
+   return render_template('index.html')
 
-@app.route("/predict", methods=["POST"])
-def predict():
-    # initialize the data dictionary that will be returned from the
-    # view
-    data = {"success": False}
-    # ensure an image was properly uploaded to our endpoint
-    if flask.request.method == "POST":
-        if flask.request.files.get("image"):
-            # read the image in PIL format
-            image = flask.request.files["image"].read()
-            image = Image.open(io.BytesIO(image))
-            data["predictions"] = []
-            if image.mode != "RGB":
-                image = image.convert("RGB")
-            image.save("output.png")
-            res, tok, lab = loadAndDetect("output.png")
-            for i in tok:
-                r = {"label": str(lab[i]), "probability": float(res[i])}
-                data["predictions"].append(r)
-            data["success"] = True
-    return flask.jsonify(data)
+@app.route('/check')
+def check():
+  data = findProducts("./1.jpeg")
+  return jsonify(data)
+#    return "Server Up and Running"
+
+
+
+
+#AddFormData
+@app.route('/predict', methods=['POST'])
+@cross_origin()
+def registerMissingReq():
+    status = "not-success"
+    if request.files['image']:
+        image = request.files["image"]
+        image.save('uploads/' + "output.jpg")
+        data = findProducts('./uploads/'+"output.jpg")
+        return jsonify(data)
+    else:
+        return status
 
 if __name__ == "__main__":
-    print(("* Loading Keras model and Flask starting server..."
-        "please wait until server has fully started"))
-    load_graph(model_file)
-    application.run(host="0.0.0.0")
-
-
-  
+    app.run(host='0.0.0.0',port='8080',debug=True)
